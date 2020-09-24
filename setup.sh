@@ -442,7 +442,7 @@ cat << EOF > vpn-ios-or-mac.mobileconfig
       <key>IPv4</key>
       <dict>
         <key>OverridePrimary</key>
-        <integer>1</integer>
+        <integer>0</integer>
       </dict>
       <key>PayloadDescription</key>
       <string>Configures VPN settings</string>
