@@ -1,7 +1,7 @@
 #!/bin/bash -e
 
 # github.com/jawj/IKEv2-setup
-# Copyright (c) 2015 – 2020 George MacKerron
+# Copyright (c) 2015 – 2024 George MacKerron
 # Released under the MIT licence: http://opensource.org/licenses/mit-license
 
 echo
@@ -14,8 +14,14 @@ function exit_badly {
   exit 1
 }
 
-[[ $(lsb_release -rs) == "18.04" ]] || [[ $(lsb_release -rs) == "20.04" ]] || exit_badly "This script is for Ubuntu 20.04 or 18.04 only: aborting (if you know what you're doing, try deleting this check)"
-[[ $(id -u) -eq 0 ]] || exit_badly "Please re-run as root (e.g. sudo ./path/to/this/script)"
+UBUNTUVERSION=$(lsb_release -rs)
+[[ "${UBUNTUVERSION}" == "18.04" ]] \
+  || [[ "${UBUNTUVERSION}" == "20.04" ]] \
+  || [[ "${UBUNTUVERSION}" == "22.04" ]] \
+  || [[ "${UBUNTUVERSION}" == "24.04" ]] \
+  || exit_badly "This script is for Ubuntu 18.04/20.04/22.04/24.04 only: aborting (if you know what you're doing, try deleting this check)"
+
+[[ $(id -u) -eq 0 ]] || exit_badly "Please run this script as root (e.g. sudo ./path/to/this/script)"
 
 
 echo "--- Adding repositories and installing utilities ---"
@@ -27,9 +33,9 @@ export DEBIAN_FRONTEND=noninteractive
 # note: software-properties-common is required for add-apt-repository
 apt-get -o Acquire::ForceIPv4=true update
 apt-get -o Acquire::ForceIPv4=true install -y software-properties-common
-add-apt-repository universe
-add-apt-repository restricted
-add-apt-repository multiverse
+add-apt-repository -y universe
+add-apt-repository -y restricted
+add-apt-repository -y multiverse
 
 apt-get -o Acquire::ForceIPv4=true install -y moreutils dnsutils
 
@@ -38,7 +44,7 @@ echo
 echo "--- Configuration: VPN settings ---"
 echo
 
-ETH0ORSIMILAR=$(ip route get 1.1.1.1 | awk -- '{printf $5}')
+ETH0ORSIMILAR=$(ip route get 1.1.1.1 | grep -oP ' dev \K\S+')
 IP=$(dig -4 +short myip.opendns.com @resolver1.opendns.com)
 
 echo "Network interface: ${ETH0ORSIMILAR}"
@@ -58,12 +64,12 @@ fi
 
 read -r -p "VPN username: " VPNUSERNAME
 while true; do
-read -r -s -p "VPN password (no quotes, please): " VPNPASSWORD
-echo
-read -r -s -p "Confirm VPN password: " VPNPASSWORD2
-echo
-[[ "${VPNPASSWORD}" = "${VPNPASSWORD2}" ]] && break
-echo "Passwords didn't match -- please try again"
+  read -r -s -p "VPN password (no quotes, please): " VPNPASSWORD
+  echo
+  read -r -s -p "Confirm VPN password: " VPNPASSWORD2
+  echo
+  [[ "${VPNPASSWORD}" = "${VPNPASSWORD2}" ]] && break
+  echo "Passwords didn't match -- please try again"
 done
 
 echo '
@@ -134,8 +140,13 @@ apt autoremove -y
 debconf-set-selections <<< "postfix postfix/mailname string ${VPNHOST}"
 debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
 
-apt-get -o Acquire::ForceIPv4=true install -y language-pack-en strongswan libstrongswan-standard-plugins strongswan-libcharon libcharon-standard-plugins libcharon-extra-plugins  iptables-persistent postfix mutt unattended-upgrades certbot uuid-runtime
+apt-get -o Acquire::ForceIPv4=true install -y \
+  language-pack-en iptables-persistent postfix mutt unattended-upgrades certbot uuid-runtime \
+  strongswan libstrongswan-standard-plugins strongswan-libcharon libcharon-extra-plugins
 
+# in 22.04 libcharon-standard-plugins is replaced with libcharon-extauth-plugins
+apt-get -o Acquire::ForceIPv4=true install -y libcharon-standard-plugins \
+  || apt-get -o Acquire::ForceIPv4=true install -y libcharon-extauth-plugins
 
 echo
 echo "--- Configuring firewall ---"
@@ -207,13 +218,24 @@ echo
 
 mkdir -p /etc/letsencrypt
 
-echo 'rsa-key-size = 4096
+# note: currently we stick to RSA because iOS/macOS may have trouble with ECDSA
+# (see https://github.com/jawj/IKEv2-setup/issues/159) 
+
+echo "
+standalone = true
+agree-tos = true
+non-interactive = true
+preferred-challenges = http
+rsa-key-size = 4096
+email = ${EMAILADDR}
 pre-hook = /sbin/iptables -I INPUT -p tcp --dport 80 -j ACCEPT
 post-hook = /sbin/iptables -D INPUT -p tcp --dport 80 -j ACCEPT
 renew-hook = /usr/sbin/ipsec reload && /usr/sbin/ipsec secrets
-' > /etc/letsencrypt/cli.ini
+" > /etc/letsencrypt/cli.ini
 
-certbot certonly --non-interactive --agree-tos --standalone --preferred-challenges http --email "${EMAILADDR}" -d "${VPNHOST}"
+# certbot on older Ubuntu doesn't recognise the --key-type switch, so try without if it errors with
+certbot certonly --key-type rsa -d "${VPNHOST}" || certbot certonly -d "${VPNHOST}"
+
 
 ln -f -s "/etc/letsencrypt/live/${VPNHOST}/cert.pem"    /etc/ipsec.d/certs/cert.pem
 ln -f -s "/etc/letsencrypt/live/${VPNHOST}/privkey.pem" /etc/ipsec.d/private/privkey.pem
@@ -263,8 +285,9 @@ conn roadwarrior
   fragmentation=yes
   forceencaps=yes
 
-  # CNSA/RFC 6379 Suite B (https://wiki.strongswan.org/projects/strongswan/wiki/IKEv2CipherSuites)
-  ike=aes256gcm16-prfsha384-ecp384!
+  # https://docs.strongswan.org/docs/5.9/config/IKEv2CipherSuites.html#_commercial_national_security_algorithm_suite
+  # ... but we also allow aes256gcm16-prfsha256-ecp256, because that's sometimes just what macOS proposes
+  ike=aes256gcm16-prfsha384-ecp384,aes256gcm16-prfsha256-ecp256!
   esp=aes256gcm16-ecp384!
 
   dpdaction=clear
@@ -301,19 +324,13 @@ ipsec restart
 # echo "${LOGINUSERNAME}:${LOGINPASSWORD}" | chpasswd
 # adduser "${LOGINUSERNAME}" sudo
 
-# sed -r \
-# -e "s/^#?Port 22$/Port ${SSHPORT}/" \
-# -e 's/^#?LoginGraceTime (120|2m)$/LoginGraceTime 30/' \
-# -e 's/^#?PermitRootLogin yes$/PermitRootLogin no/' \
-# -e 's/^#?X11Forwarding yes$/X11Forwarding no/' \
-# -e 's/^#?UsePAM yes$/UsePAM no/' \
-# -i.original /etc/ssh/sshd_config
-
-# grep -Fq 'jawj/IKEv2-setup' /etc/ssh/sshd_config || echo "
-# # https://github.com/jawj/IKEv2-setup
-# MaxStartups 1
-# MaxAuthTries 2
-# UseDNS no" >> /etc/ssh/sshd_config
+sed -r \
+-e "s/^#?Port 22$/Port ${SSHPORT}/" \
+-e 's/^#?LoginGraceTime (120|2m)$/LoginGraceTime 30/' \
+-e 's/^#?PermitRootLogin yes$/PermitRootLogin no/' \
+-e 's/^#?X11Forwarding yes$/X11Forwarding no/' \
+-e 's/^#?UsePAM yes$/UsePAM no/' \
+-i.original /etc/ssh/sshd_config
 
 # if [[ $CERTLOGIN = "y" ]]; then
 #   mkdir -p "/home/${LOGINUSERNAME}/.ssh"
@@ -377,7 +394,7 @@ echo
 
 cd "/home/${LOGINUSERNAME}"
 
-cat << EOF > vpn-ios-or-mac.mobileconfig
+cat << EOF > vpn-ios.mobileconfig
 <?xml version='1.0' encoding='UTF-8'?>
 <!DOCTYPE plist PUBLIC '-//Apple//DTD PLIST 1.0//EN' 'http://www.apple.com/DTDs/PropertyList-1.0.dtd'>
 <plist version='1.0'>
@@ -485,6 +502,241 @@ cat << EOF > vpn-ios-or-mac.mobileconfig
 </plist>
 EOF
 
+cat << EOF > vpn-mac.applescript
+set vpnuser to text returned of (display dialog "Please enter your VPN username" default answer "")
+set vpnpass to text returned of (display dialog "Please enter your VPN password" default answer "" with hidden answer)
+set plist to "<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE plist PUBLIC '-//Apple//DTD PLIST 1.0//EN' 'http://www.apple.com/DTDs/PropertyList-1.0.dtd'>
+<plist version='1.0'>
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>IKEv2</key>
+      <dict>
+        <key>AuthenticationMethod</key>
+        <string>None</string>
+        <key>ChildSecurityAssociationParameters</key>
+        <dict>
+          <key>EncryptionAlgorithm</key>
+          <string>AES-256-GCM</string>
+          <key>IntegrityAlgorithm</key>
+          <string>SHA2-384</string>
+          <key>DiffieHellmanGroup</key>
+          <integer>20</integer>
+          <key>LifeTimeInMinutes</key>
+          <integer>1440</integer>
+        </dict>
+        <key>DeadPeerDetectionRate</key>
+        <string>Medium</string>
+        <key>DisableMOBIKE</key>
+        <integer>0</integer>
+        <key>DisableRedirect</key>
+        <integer>0</integer>
+        <key>EnableCertificateRevocationCheck</key>
+        <integer>0</integer>
+        <key>EnablePFS</key>
+        <true/>
+        <key>ExtendedAuthEnabled</key>
+        <true/>
+        <key>AuthName</key>
+        <string>" & vpnuser & "</string>
+        <key>AuthPassword</key>
+        <string>" & vpnpass & "</string>
+        <key>IKESecurityAssociationParameters</key>
+        <dict>
+          <key>EncryptionAlgorithm</key>
+          <string>AES-256-GCM</string>
+          <key>IntegrityAlgorithm</key>
+          <string>SHA2-384</string>
+          <key>DiffieHellmanGroup</key>
+          <integer>20</integer>
+          <key>LifeTimeInMinutes</key>
+          <integer>1440</integer>
+        </dict>
+        <key>OnDemandEnabled</key>
+        <integer>1</integer>
+        <key>OnDemandRules</key>
+        <array>
+          <dict>
+            <key>Action</key>
+            <string>Connect</string>
+          </dict>
+        </array>
+        <key>RemoteAddress</key>
+        <string>${VPNHOST}</string>
+        <key>RemoteIdentifier</key>
+        <string>${VPNHOST}</string>
+        <key>UseConfigurationAttributeInternalIPSubnet</key>
+        <integer>0</integer>
+      </dict>
+      <key>IPv4</key>
+      <dict>
+        <key>OverridePrimary</key>
+        <integer>1</integer>
+      </dict>
+      <key>PayloadDescription</key>
+      <string>Configures VPN settings</string>
+      <key>PayloadDisplayName</key>
+      <string>VPN</string>
+      <key>PayloadIdentifier</key>
+      <string>com.apple.vpn.managed.$(uuidgen)</string>
+      <key>PayloadType</key>
+      <string>com.apple.vpn.managed</string>
+      <key>PayloadUUID</key>
+      <string>$(uuidgen)</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Proxies</key>
+      <dict>
+        <key>HTTPEnable</key>
+        <integer>0</integer>
+        <key>HTTPSEnable</key>
+        <integer>0</integer>
+      </dict>
+      <key>UserDefinedName</key>
+      <string>${VPNHOST}</string>
+      <key>VPNType</key>
+      <string>IKEv2</string>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>IKEv2 VPN configuration (${VPNHOST})</string>
+  <key>PayloadIdentifier</key>
+  <string>com.mackerron.vpn.$(uuidgen)</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>$(uuidgen)</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>
+EOF
+
+cat << EOF > vpn-mac.applescript
+set vpnuser to text returned of (display dialog "Please enter your VPN username" default answer "")
+set vpnpass to text returned of (display dialog "Please enter your VPN password" default answer "" with hidden answer)
+set plist to "<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE plist PUBLIC '-//Apple//DTD PLIST 1.0//EN' 'http://www.apple.com/DTDs/PropertyList-1.0.dtd'>
+<plist version='1.0'>
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>IKEv2</key>
+      <dict>
+        <key>AuthenticationMethod</key>
+        <string>None</string>
+        <key>ChildSecurityAssociationParameters</key>
+        <dict>
+          <key>EncryptionAlgorithm</key>
+          <string>AES-256-GCM</string>
+          <key>IntegrityAlgorithm</key>
+          <string>SHA2-384</string>
+          <key>DiffieHellmanGroup</key>
+          <integer>20</integer>
+          <key>LifeTimeInMinutes</key>
+          <integer>1440</integer>
+        </dict>
+        <key>DeadPeerDetectionRate</key>
+        <string>Medium</string>
+        <key>DisableMOBIKE</key>
+        <integer>0</integer>
+        <key>DisableRedirect</key>
+        <integer>0</integer>
+        <key>EnableCertificateRevocationCheck</key>
+        <integer>0</integer>
+        <key>EnablePFS</key>
+        <true/>
+        <key>ExtendedAuthEnabled</key>
+        <true/>
+        <key>AuthName</key>
+        <string>" & vpnuser & "</string>
+        <key>AuthPassword</key>
+        <string>" & vpnpass & "</string>
+        <key>IKESecurityAssociationParameters</key>
+        <dict>
+          <key>EncryptionAlgorithm</key>
+          <string>AES-256-GCM</string>
+          <key>IntegrityAlgorithm</key>
+          <string>SHA2-384</string>
+          <key>DiffieHellmanGroup</key>
+          <integer>20</integer>
+          <key>LifeTimeInMinutes</key>
+          <integer>1440</integer>
+        </dict>
+        <key>OnDemandEnabled</key>
+        <integer>1</integer>
+        <key>OnDemandRules</key>
+        <array>
+          <dict>
+            <key>Action</key>
+            <string>Connect</string>
+          </dict>
+        </array>
+        <key>RemoteAddress</key>
+        <string>${VPNHOST}</string>
+        <key>RemoteIdentifier</key>
+        <string>${VPNHOST}</string>
+        <key>UseConfigurationAttributeInternalIPSubnet</key>
+        <integer>0</integer>
+      </dict>
+      <key>IPv4</key>
+      <dict>
+        <key>OverridePrimary</key>
+        <integer>1</integer>
+      </dict>
+      <key>PayloadDescription</key>
+      <string>Configures VPN settings</string>
+      <key>PayloadDisplayName</key>
+      <string>VPN</string>
+      <key>PayloadIdentifier</key>
+      <string>com.apple.vpn.managed.$(uuidgen)</string>
+      <key>PayloadType</key>
+      <string>com.apple.vpn.managed</string>
+      <key>PayloadUUID</key>
+      <string>$(uuidgen)</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>Proxies</key>
+      <dict>
+        <key>HTTPEnable</key>
+        <integer>0</integer>
+        <key>HTTPSEnable</key>
+        <integer>0</integer>
+      </dict>
+      <key>UserDefinedName</key>
+      <string>${VPNHOST}</string>
+      <key>VPNType</key>
+      <string>IKEv2</string>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>IKEv2 VPN configuration (${VPNHOST})</string>
+  <key>PayloadIdentifier</key>
+  <string>com.mackerron.vpn.$(uuidgen)</string>
+  <key>PayloadRemovalDisallowed</key>
+  <false/>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>$(uuidgen)</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>"
+set tmpdir to do shell script "mktemp -d"
+set tmpfile to tmpdir & "/vpn.mobileconfig"
+do shell script "touch " & tmpfile
+write plist to tmpfile
+do shell script "open /System/Library/PreferencePanes/Profiles.prefPane " & tmpfile
+delay 5
+do shell script "rm " & tmpfile
+EOF
+
 grep -Fq 'jawj/IKEv2-setup' /etc/mime.types || echo "
 # https://github.com/jawj/IKEv2-setup
 application/vnd.strongswan.profile sswan
@@ -518,7 +770,7 @@ done
 apt-get install -y strongswan libstrongswan-standard-plugins libcharon-extra-plugins
 apt-get install -y libcharon-standard-plugins || true  # 17.04+ only
 
-ln -f -s /etc/ssl/certs/DST_Root_CA_X3.pem /etc/ipsec.d/cacerts/
+ln -f -s /etc/ssl/certs/ISRG_Root_X1.pem /etc/ipsec.d/cacerts/
 
 grep -Fq 'jawj/IKEv2-setup' /etc/ipsec.conf || echo "
 # https://github.com/jawj/IKEv2-setup
@@ -565,14 +817,32 @@ echo "To connect automatically: change auto=add to auto=start in /etc/ipsec.conf
 EOF
 
 cat << EOF > vpn-instructions.txt
-== iOS and macOS ==
+== iOS ==
 
-A configuration profile is attached as vpn-ios-or-mac.mobileconfig — simply open this to install. You will be asked for your device PIN or password, and your VPN username and password, not necessarily in that order.
+A configuration profile is attached as vpn-ios.mobileconfig.
+
+Open this attachment. Then go to Settings > General > VPN & Device Management, and find the profile under 'DOWNLOADED PROFILE'.
+
+You will be asked for your device PIN or password, and then your VPN username and password.
+
+These instructions apply to iOS 15. Earlier (and probably later) versions of iOS will also work, but the exact setup steps may differ.
+
+
+== macOS ==
+
+In macOS Monterey, your VPN username and password must be embedded in the profile file. However, your password cannot be included in a profile sent by email for security reasons.
+
+So: open vpn-mac.applescript and run it from Script Editor. You'll be prompted for your VPN username and password.
+
+System Preferences will then open. Select the profile listed as 'Downloaded' on the left, and click 'Install...' in the main panel.
 
 
 == Windows ==
 
 You will need Windows 10 Pro or above. Please run the following commands in PowerShell:
+
+\$Response = Invoke-WebRequest -UseBasicParsing -Uri https://valid-isrgrootx1.letsencrypt.org
+# ^ this line fixes a certificate lazy-loading bug: see https://github.com/jawj/IKEv2-setup/issues/126
 
 Add-VpnConnection -Name "${VPNHOST}" \`
   -ServerAddress "${VPNHOST}" \`
@@ -597,6 +867,7 @@ Set-VpnConnection -Name "${VPNHOST}" -SplitTunneling \$True
 
 You will need to enter your chosen VPN username and password in order to connect.
 
+
 == Android ==
 
 Download the strongSwan app from the Play Store: https://play.google.com/store/apps/details?id=org.strongswan.android
@@ -612,7 +883,7 @@ A bash script to set up strongSwan as a VPN client is attached as vpn-ubuntu-cli
 
 EOF
 
-EMAIL=$USER@$VPNHOST mutt -s "VPN configuration" -a vpn-ios-or-mac.mobileconfig vpn-android.sswan vpn-ubuntu-client.sh -- "${EMAILADDR}" < vpn-instructions.txt
+EMAIL=$USER@$VPNHOST mutt -s "VPN configuration" -a vpn-ios.mobileconfig vpn-mac.applescript vpn-android.sswan vpn-ubuntu-client.sh -- "${EMAILADDR}" < vpn-instructions.txt
 
 echo
 echo "--- How to connect ---"
@@ -622,4 +893,3 @@ echo "Connection instructions have been emailed to you, and can also be found in
 # necessary for IKEv2?
 # Windows: https://support.microsoft.com/en-us/kb/926179
 # HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\PolicyAgent += AssumeUDPEncapsulationContextOnSendRule, DWORD = 2
-

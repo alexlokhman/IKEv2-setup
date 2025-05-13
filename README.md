@@ -17,30 +17,31 @@
 
 ## What?
 
-A Bash script that takes Ubuntu Server 20.04 LTS or 18.04 LTS from clean install to production-ready IKEv2 VPN with strongSwan. Comments and pull requests welcome. It may still work on 17.10, 17.04 or 16.10 if you remove the version check, but these are not tested.
+A Bash script that takes Ubuntu Server LTS versions 18.04 - 24.04 from clean install to fully-configured IKEv2 VPN using strongSwan. Comments and pull requests welcome.
 
 ### VPN server
 
-* The VPN server identifies itself with a _Let's Encrypt_ certificate, so there's no need for clients to install private certificates — they can simply authenticate with username and strong password (EAP-MSCHAPv2).
-* The only cipher set implemented is [CNSA/RFC 6379 Suite B](https://wiki.strongswan.org/projects/strongswan/wiki/IKEv2CipherSuites#Commercial-National-Security-Algorithm-CNSA-Suite-Suite-B-Cryptographic-Suites-for-IPsec-RFC-6379) with confidentiality/encryption.
+* The VPN server identifies itself with a _Let's Encrypt_ certificate, so there's no need for clients to install private certificates — they can simply authenticate with a username and strong password (EAP-MSCHAPv2).
 
-* The box is firewalled with `iptables` and configured for unattended security upgrades, and the _Let's Encrypt_ certificate is set up to auto-renew, so it _could_ be safe to forget about it all until 18.04 reaches end-of-life in 2023. (Note that `iptables` setup includes [basic rate-limiting](https://debian-administration.org/article/187/Using_iptables_to_rate-limit_incoming_connections), dropping new connections if there have been 60+ connection attempts in the last 5 minutes).
+* The preferred cipher set is the US [Commercial National Security Algorithm Suite (CNSA)](https://docs.strongswan.org/docs/5.9/config/IKEv2CipherSuites.html#_commercial_national_security_algorithm_suite): `aes256gcm16-prfsha384-ecp384`. However, due to an apparent bug in recent versions of macOS, `aes256gcm16-prfsha256-ecp256` is also accepted.
+
+* The box is firewalled with `iptables` and configured for unattended security upgrades, and the _Let's Encrypt_ certificate is set up to auto-renew, so it _could_ be safe to forget about it all until your chosen Ubuntu version reaches end-of-life. (Note that `iptables` setup includes [basic rate-limiting](https://debian-administration.org/article/187/Using_iptables_to_rate-limit_incoming_connections), dropping new connections if there have been 60+ connection attempts in the last 5 minutes).
 
 ### VPN clients
 
 The VPN is tested working with:
 
-*  **macOS 10.12 – 10.15, iOS 10 – 13**  — Built-in clients. A `.mobileconfig` profile is generated for Mac and iOS, to set up secure ciphers and enable *Connect on demand* support.
-* **Windows 10 Pro** — Built-in client. PowerShell commands are generated to configure the VPN and secure ciphers.
+*  **macOS 10.12 – 14, iOS 10 – 17**  — Built-in clients. A `.mobileconfig` profile is generated for iOS, to set up secure ciphers and enable *Connect on demand* support. An AppleScript script is generated for Mac, to prompt for VPN credentials and then do the same.
+* **Windows 10 Pro, 11 Pro** — Built-in client. PowerShell commands are generated to configure the VPN and secure ciphers.
 * **Ubuntu (17.04 and presumably others)** — Using strongSwan. A Bash script is generated to set this up.
-* **Android** — Using the official strongSwan app.
+* **Android** — Using the official strongSwan app. A `.sswan` file is generated for configuration.
 
 Configuration files, scripts and instructions are sent by email. They are also dropped in the newly-created non-root user's home directory on the server (this point may be important, because VPS providers sometimes block traffic on port 25 by default and, even if successfully sent, conscientious email hosts will sometimes mark the email as spam).
 
 ### Caveats
 
 * There's no IPv6 support — and, in fact, IPv6 networking is disabled — because supporting IPv6 prevents the use of `forceencaps`, and honestly also because I haven't got to grips with the security implications (`ip6tables` rules and so on).
-* The script **won't** work as-is on 16.04 LTS because the `certbot` package is outdated, found under the name `letsencrypt`, and doesn't renew certificates automatically.
+* The script **won't** work as-is on 16.04 LTS or earlier (where the `certbot` package is outdated, found under the name `letsencrypt`, and doesn't renew certificates automatically).
 * **Don't use this unmodified on a server you use for anything else**: it does as it sees fit with various wider settings that may conflict with what you're doing.
 
 
@@ -48,9 +49,13 @@ Configuration files, scripts and instructions are sent by email. They are also d
 
 1. Pick a domain name for the VPN server and **ensure that it already resolves to the correct IP** by creating the appropriate `A` record in the DNS and making sure it has propagated. _Let's Encrypt_ needs this in order to create your server certificate.
 
-  _Don't want to use your own domain name here? You could try using the reverse DNS name provided by your server host, or an automatic IP/DNS alias service such as [sslip.io](https://sslip.io/), [xip.io](http://xip.io), [nip.io](https://nip.io), [s.test.cab](https://s.test.cab), or [xip.lhjmmc.cn](https://xip.lhjmmc.cn/) (earlier versions of this script used an [sslip.io](https://sslip.io/) address by default). However, both of these options may fall foul of Let's Encrypt's per-domain rate limit of [50 certificates per week](https://letsencrypt.org/docs/rate-limits/). Note that ephemeral AWS domain names like `ec2-34-267-212-76.compute-1.amazonaws.com` [are not accepted by Let's Encrypt](https://community.letsencrypt.org/t/policy-forbids-issuing-for-name-on-amazon-ec2-domain/12692)._
+  _Don't want to use your own domain name here? You could try using the reverse DNS name provided by your server host, or an automatic IP/DNS alias service such as [sslip.io](https://sslip.io/), [xip.io](http://xip.io), [nip.io](https://nip.io), [s.test.cab](https://s.test.cab), or [xip.lhjmmc.cn](https://xip.lhjmmc.cn/) (earlier versions of this script used an [sslip.io](https://sslip.io/) address by default). However, these options may fall foul of Let's Encrypt's per-domain rate limit of [50 certificates per week](https://letsencrypt.org/docs/rate-limits/). Note that ephemeral AWS domain names like `ec2-34-267-212-76.compute-1.amazonaws.com` [are not accepted by Let's Encrypt](https://community.letsencrypt.org/t/policy-forbids-issuing-for-name-on-amazon-ec2-domain/12692)._
 
-2. Start with a clean Ubuntu 20.04 or 18.04 Server installation. The cheapest VPSs offered by Linode, OVH, vps.ag, Google, Hetzner and Vultr, and Scaleway's ARM64-2GB, have all been tested working. On Scaleway, unblock SMTP ports in the admin panel and *hard* reboot the server first, or your configuration email will not be delivered. On Vultr, port 25 may also be blocked, but you won't know, and the only way to fix it is to open a support ticket.
+2. Start with a clean Ubuntu Server installation. The cheapest VPSs offered by Linode, OVH, vps.ag, Google, AWS Lightsail, Hetzner, Vultr, Scaleway's ARM64-2GB, and Oracle's VM.Standard.E2.1.Micro (AMD) have all been tested working. 
+
+    * On Scaleway, unblock SMTP ports in the admin panel and *hard* reboot the server first, or your configuration email will not be delivered.
+    * On Vultr, port 25 may also be blocked, but you won't know, and the only way to fix it is to open a support ticket.
+    * On Oracle you'll need to enable network ingress for TCP on port 80 (for Let's Encrypt) and on any custom SSH port you choose, and for UDP on ports 500 and 4500 (for the VPN) in the interface for the relevant VNIC. Egress on port 25 is always blocked unlesss you file a ticket to open it.
 
 3. Optionally, set up [key-based SSH authentication](https://help.ubuntu.com/community/SSH/OpenSSH/Keys) (alternatively, this may have been handled automatically by your server provider, or you may choose to stick with password-based authentication). This may require you to run some or all of the following commands, with appropriate substitutions, on the machine you're going to be logging in from:
 
@@ -58,7 +63,7 @@ Configuration files, scripts and instructions are sent by email. They are also d
        ssh-keygen -t rsa -b 4096 -C "me@my-domain.tld"  # alternatively, use RSA and go (4,096 bits) large
 
        ssh root@myvpn.example.net  # if your host forces a password change before anything else (e.g. Hetzner), do it now, then exit
-       ssh-copy-id -i ~/.ssh/id_ed25519 root@myvpn.example.net  # copy your public key over to the VPN server
+       ssh-copy-id -i ~/.ssh/id_ed25519.pub root@myvpn.example.net  # copy your public key over to the VPN server
        ssh root@myvpn.example.net  # log back in to the server for the next step ...
 
 4. On your new server installation, become `root`, download the script, give it execute permissions, and run it:
@@ -113,13 +118,14 @@ Configuration files, scripts and instructions are sent by email. They are also d
         sudo ipsec statusall           # status, who's connected, etc.
         sudo iptables -L -v            # how much traffic has been forwarded, dropped, etc.?
         sudo tail -f /var/log/syslog   # real-time logs of (dis)connections etc.
-        
 
 ### Troubleshooting
 
-If things don't work out right away ...
+If you ran this script before 13 September 2021, and used the generated PowerShell commands to set up Windows 10 clients, those clients may be unable to connect owing to a bug in Windows 10. If this is the case, see [issue #126](https://github.com/jawj/IKEv2-setup/issues/126).
 
-* On the client: make sure you created the connection using the newly emailed `.mobileconfig` file or PowerShell commands. Setting it up manually via the OS GUI will _not_ work, since it will default to insecure ciphers which the server has not been configured to support. Also note that `.mobileconfig` files generated with earlier iterations of this script may no longer be compatible, since the configured ciphers have changed from time to time.
+Otherwise, if things don't work out right away ...
+
+* On the client: make sure you created the connection using the newly emailed `.mobileconfig` file, AppleScript or PowerShell commands. Setting it up manually via the OS GUI will _not_ work, since it will default to insecure ciphers which the server has not been configured to support. Also note that `.mobileconfig` files generated with earlier iterations of this script may no longer be compatible, since the configured ciphers have changed from time to time.
 
 * On the server: check that network ingress for UDP on ports 500 and 4500 is enabled (on some cloud platforms you'll have to add appropriate firewall rules to your virtual network). Also check that packet forwarding is enabled (on some cloud platforms this is controlled by a configuration setting that's off by default).
 
@@ -149,7 +155,7 @@ To exit nano it's `Ctrl + O` then `Ctrl + X`, and to have strongSwan pick up the
 
 ### Upgrades
 
-If you're on a pre-18.04 version of Ubuntu, it's probably easiest to make a record of any changes to `ipsec.secrets`, blow the whole thing away and reinstall, then reinstate `ipsec.secrets`.
+If you're on an older version of Ubuntu, it's probably easiest to make a record of any changes to `ipsec.secrets`, blow the whole thing away and reinstall, then reinstate `ipsec.secrets`.
 
 Note that you may also need to delete and recreate all your client connection settings using the updated PowerShell commands or .mobileconfig file, since there have been a few cipher changes over time. 
 
@@ -176,4 +182,3 @@ More on IKEv2 at https://www.cl.cam.ac.uk/~mas90/resources/strongswan/ and https
 ### Why not Algo?
 
 Feel free to use [Algo](https://github.com/trailofbits/algo) instead. It has similar aims, and now configures [WireGuard](https://www.wireguard.com/) too. However, it has many more moving parts, and requires several local installation steps before you even start setting up your VPN. This script is intended to be much simpler.
-
